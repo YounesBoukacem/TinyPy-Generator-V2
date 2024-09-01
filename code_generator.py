@@ -154,7 +154,7 @@ class CodeGenerator:
 
 
 
-    def generate_code(self, symbol, assigned_identifiers, last_variable, for_init_step, parent=None ):
+    def generate_code(self, symbol, assigned_identifiers, last_variable, for_init_step, parent=None):
         """
         Generate code recursively based on the context-free grammar rules.
 
@@ -169,85 +169,81 @@ class CodeGenerator:
         """
         node = Node(symbol, parent=parent)
 
+        # If the symbol is a non-terminal <--> it's a production rule (PR)
         if symbol in self.cfg_rules:
+            # We check if the PR is an IDENTIFIER_INITIALIZATION in which case we check if we didn't go past max_init initializations
             if symbol == "IDENTIFIER_INITIALIZATION":
                 if self.init_count < self.max_init:
                     self.init_count += 1
                 else:
                     symbol = "INITIALIZATION"
-
+            # We developp the PR
             rule = random.choice(self.cfg_rules[symbol])
             symbols = rule.split(" ")
-            
+            # We call the generate code function to get the string associated with this PR
             generated_symbols = [self.generate_code(s, assigned_identifiers, last_variable, for_init_step, node) for s in symbols]
-
+            # If it's an INITIAL=>DIGIT PR , we record the DIGIT=>0..255 value in the for_init_step dictionary (will be used when calculating the FINAL of the for loop)
             if symbol == "INITIAL":
                 init = generated_symbols[0]
                 for_init_step["initial_value"] = init
-                
-                
-            if symbol == "INITIALIZATION":
+            # Elif it's an INITIALIZATION PR, we record the generated VARIABLE and it's DIGIT value in the assigned_identifiers dictionary
+            elif symbol == "INITIALIZATION":
                 variable_name = generated_symbols[0]
                 variable_value = generated_symbols[4]  
                 assigned_identifiers[variable_name] = variable_value
-                # assigned_identifiers.add(generated_symbols[0])
-
-            if (symbol == "SIMPLE_ASSIGNMENTS") or (symbol == "ADVANCED_ASSIGNMENTS"):
+            # Elif it's a SIMPLE/ADVANCED_ASSIGNMENTS PR, we record the generated VARIABLE in the last_variable set (for it to be printed later ...)
+            elif (symbol == "SIMPLE_ASSIGNMENTS") or (symbol == "ADVANCED_ASSIGNMENTS"):
+                # We check if the SIMPLE/ADVANCED_ASSIGNMENTS PR didn't develop to "" (in which case it's just as if didn't exist ...)
                 if generated_symbols[0]:
                     last_variable.add(generated_symbols[0])
-
+            # Concatenate the generated_sub_codes and return the resulting sub_code
             return ''.join(generated_symbols)
 
-
-        if symbol == "WHILE_IDENTIFIER":
-
-            return for_init_step.get("initial_var", "*")
-            
-        elif (symbol == "FINAL") or (symbol == "FINAL_LESS"):
-            
-            initial_value = for_init_step.get("initial_value", "0")
-            # Generate valid step_value and execution_count
-            valid_values = [(1, 2), (2, 1), (2, 2), (2, 3), (3, 2)]
-            step_value, execution_count = random.choice(valid_values)
-            for_init_step["step"] = str(step_value)
-            
-            final_value = step_value * execution_count + int(initial_value) - 1
-            return str(final_value)
-
-        elif symbol == "FINAL_GREATER":
-
-            initial_value = for_init_step.get("initial_value", "0")
-            # Generate valid step_value and execution_count
-            valid_values = [(1, 2), (2, 1), (2, 2), (2, 3), (3, 2)]
-            step_value, execution_count = random.choice(valid_values)
-            for_init_step["step"] = str(step_value)
-            
-            final_value = int(initial_value) - step_value * execution_count + 1
-            return str(final_value)
-
-            
-                
-        elif symbol == "STEP":
-            
-            return for_init_step.get("step", "0")
-            
-        elif symbol == "EXPRESSION_IDENTIFIER":
+        # Else the symbol is a (meta-)terminal, a terminal being one that is returned as is (the simplest case), and a meta-terminal must be generated based on past generations   
+        # If EXPRESSION_IDENTIFIER (like we find in ASSIGNEMENTS, DISPLAYS, and FOR loops), we choose randomly among one of the previously initialized variables
+        # NOTE: FOR loops don't require the control variable to be initialized -> this could be a point of generalization
+        if symbol == "EXPRESSION_IDENTIFIER":
             identifier = random.choice(tuple(assigned_identifiers.keys())) if assigned_identifiers else random.choice(self.cfg_rules["DIGIT"])
             return identifier
-
+        # If EXPRESSION_IDENTIFIER_WHILE (i.e. "the declaration" of the control variable of the while loop)
+        # NOTE: this one contrary to for loop ... must be one of the existing initialized variables
         if symbol == "EXPRESSION_IDENTIFIER_WHILE":
-            
             initial_var = random.choice(tuple(assigned_identifiers.keys())) if assigned_identifiers else random.choice(self.cfg_rules["DIGIT"])
             for_init_step["initial_var"] = initial_var
             for_init_step["initial_value"] = assigned_identifiers[initial_var]
-            return initial_var
-        elif symbol == "DISPLAY_IDENTIFIER":
+            return initial_var    
+        # If WHILE_IDENTIFIER (i.e. the "update" of the control variable of the while loop), get it from the for_init_step dictionary (filled by the EXPRESSION_IDENTIFIER_WHILE meta-terminal)
+        if symbol == "WHILE_IDENTIFIER":
+            return for_init_step.get("initial_var", "*")
+        # If the symbol is a FINAL (for the for loop) or FINAL_LESS (for the while <= loop), choose a step and number of executions, compute the FINAL/_LESS using the for_init_step dict, and record the setp for the for loop as it will be needed later to fill the STEP meta-terminal
+        if (symbol == "FINAL") or (symbol == "FINAL_LESS"):    
+            initial_value = for_init_step.get("initial_value", "0")
+            # Generate valid step_value and execution_count
+            valid_values = [(1, 2), (2, 1), (2, 2), (2, 3), (3, 2)]
+            step_value, execution_count = random.choice(valid_values)
+            for_init_step["step"] = str(step_value)
+            final_value = step_value * execution_count + int(initial_value) - 1
+            return str(final_value)
+        # Same thing as for the one before but this one is only meant for the while loop
+        if symbol == "FINAL_GREATER":
+            initial_value = for_init_step.get("initial_value", "0")
+            # Generate valid step_value and execution_count
+            valid_values = [(1, 2), (2, 1), (2, 2), (2, 3), (3, 2)]
+            step_value, execution_count = random.choice(valid_values)
+            for_init_step["step"] = str(step_value)
+            final_value = int(initial_value) - step_value * execution_count + 1
+            return str(final_value)
+        # If the STEP meta variable, fill it with the for_init_step dict  
+        if symbol == "STEP":
+            return for_init_step.get("step", "0")
+        # If DISPLAY_IDENTIFIER, fill it with either the last variable (if there was an ASSIGNEMENTS), or any randomly chosen variable 
+        if symbol == "DISPLAY_IDENTIFIER":
             try:
                 return f"{tuple(last_variable)[0]}"
             except:
                 return f"{random.choice(tuple(assigned_identifiers.keys()))}"
-        else:
-            return symbol
+        # If non of the above i.e. its a terminal (not a meta-terminal)
+        return symbol
 
     
     
@@ -299,7 +295,11 @@ class CodeGenerator:
         else :
             level_passed = "LEVEL" + level
             
-        program = self.generate_code(level_passed, assigned, last_variable, for_init_step, root)
+        program = self.generate_code(symbol = level_passed,
+                                     assigned_identifiers = assigned,
+                                     last_variable = last_variable,
+                                     for_init_step = for_init_step,
+                                     parent = root)
         
         return root, program.replace("SPACE", " ")
     
