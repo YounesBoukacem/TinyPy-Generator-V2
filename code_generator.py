@@ -154,7 +154,7 @@ class CodeGenerator:
 
 
 
-    def generate_code(self, symbol, assigned_identifiers, last_variable, for_init_step, parent=None):
+    def generate_code(self, symbol, assigned_identifiers, last_variable, for_init_step, parent=None)->str:
         """
         Generate code recursively based on the context-free grammar rules.
 
