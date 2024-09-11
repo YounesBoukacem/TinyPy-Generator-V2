@@ -8,6 +8,7 @@ import argparse
 import datetime
 import multiprocessing as mp
 from time import sleep
+import signal
 
 
 cfg_rules = {
@@ -16,7 +17,7 @@ cfg_rules = {
     "DIGIT": [str(i) for i in range(256)],
 
     # Operators
-    "ARITHMETIC_OPERATOR": ["+", "-", "/"],
+    "ARITHMETIC_OPERATOR": ["+", "-", "/", "*"],
     "RELATIONAL_OPERATOR": ["<", ">", "<=", ">=", "!=", "=="],
     "LOGICAL_OPERATOR_INFIX": ["and", "or"],
     "LOGICAL_OPERATOR_PREFIX": ["not"],
@@ -434,16 +435,15 @@ def run_code(q:mp.Queue, random_state):
 if __name__ == "__main__":
 	parser = argparse.ArgumentParser(description = "Full Random TinyPy Generator")
 	parser.add_argument("--random_state", help = "Random state to be loaded if any")
-	parser.add_argument("--nb_programs", default = 1000, help = "Number of programs to be generated")
+	parser.add_argument("--nb_programs", default = 1000000, help = "Number of programs to be generated")
 	parser.add_argument("--output_file", default = "./data.txt", help = "Number of programs to be generated")
-	parser.add_argument("--nb_processes_per_batch", default = 10, help="Number of processes to launch simultaneously at each iteration")
-	parser.add_argument("--timeout", default = 3, help = "Number of seconds to wait for a process to terminate")
+	parser.add_argument("--timeout", default = 2, help = "Number of seconds to wait for a process to terminate")
 	args = parser.parse_args()
 	
 	random_state =  args.random_state
-	nb_threads_per_batch = args.nb_processes_per_batch
 	output_file = args.output_file
 	nb_programs = args.nb_programs
+	timeout = args.timeout
 
 	# Saving or setting the random state
 	if args.random_state is None:
@@ -458,23 +458,46 @@ if __name__ == "__main__":
 		random.setstate(random_state)
 	
 	## Launching the generation
+	class TimeoutException(Exception):
+		pass
+
+	def timeout_handler(signum, frame):
+		raise TimeoutException()
+
+	signal.signal(signal.SIGALRM, timeout_handler)
 	
-	# Preping the queue and the output file stream
-	q = mp.Queue()
 	f = open(output_file, "w")
+
+	nb_timeouts = 0
+	nb_zero_divisions = 0
 	
 	# Launching the loop
-	for i in tqdm(range(nb_programs//nb_threads_per_batch)):
-		processes = [mp.Process(target = run_code, args=(q,)) for _ in range(nb_threads_per_batch)]
-
-		for process in processes:
-			process.start()
+	for i in tqdm(range(nb_programs)):
+		code = generate_random_code()
+		sio = StringIO()
+		try:
+			with redirect_stdout(sio):
+				signal.alarm(timeout)
+				exec(code, dict())
+				output = sio.getvalue()
+		except ZeroDivisionError:
+			output = "ZeroDivisionError"
+			nb_zero_divisions += 1
+		except ValueError:
+			nb_timeouts += 1
+			output = "ValueError"
+		except OverflowError:
+			nb_timeouts += 1
+			output = "OverflowError"
+		except TimeoutException as e:
+			nb_timeouts += 1
+			output = "TimeoutError"
+		finally:
+			signal.alarm(0)
 		
-		for process in processes:
-			process.join()
-			process.terminate()
-		
-		while not q.empty():
-			q.get()
+		f.write(code + "# output\n# " + "\n# ".join(output.split("\n")[:-1]) + "\n\n")
+	
+	print(f"percentage of timeouts: {nb_timeouts/nb_programs * 100:.2f}%")
+	print(f"percentage of zero divisions: {nb_zero_divisions/nb_programs * 100:.2f}%")
 
 	f.close()
