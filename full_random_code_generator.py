@@ -426,9 +426,7 @@ if __name__ == "__main__":
 	parser.add_argument("--use_tqdm", help = "Whether or not to use tqdm for monitoring progress (set to True for true, False for anything else), defaults to True)")
 	
 	args = parser.parse_args()
-	
-	# random_state =  args.random_state
-	random_state = "/mnt/d/esi-5/tiny-lm-full-random-mode/datasets/dataset-2/frcg-random-states/random_state_2024-09-16_20-23.bin"
+	random_state =  args.random_state
 	nb_programs = int(args.nb_programs)
 	output_file = args.output_file
 	timeout = int(args.timeout)
@@ -448,9 +446,17 @@ if __name__ == "__main__":
 		with open(f"./frcg-random-states/random_state_{date_hour}.bin", "wb") as f:
 			pickle.dump(random_state, f)
 	else:
-		with open(args.random_state, "rb") as f:
-			random_state = pickle.load(f)
-		random.setstate(random_state)
+		try:
+			with open(args.random_state, "rb") as f:
+				random_state = pickle.load(f)
+				random.setstate(random_state)
+		except Exception:
+			random_state = random.getstate()
+			now = datetime.datetime.now()
+			date_hour = now.strftime("%Y-%m-%d_%H-%M")
+			Path(args.random_state).mkdir(parents = True, exist_ok = True)
+			with open(f"{args.random_state}/random_state_{date_hour}.bin", "wb") as f:
+				pickle.dump(random_state, f)
 	
 	## Launching the generation
 	class TimeoutException(Exception):
