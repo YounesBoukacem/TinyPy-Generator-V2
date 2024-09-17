@@ -1,6 +1,6 @@
 import random
 import re
-from tqdm import tqdm
+# from tqdm import tqdm
 from io import StringIO
 from contextlib import redirect_stdout
 import pickle
@@ -9,7 +9,8 @@ import datetime
 import multiprocessing as mp
 from time import sleep
 import signal
-
+import hashlib
+from pathlib import Path
 
 cfg_rules = {
     # Variables and digits
@@ -17,7 +18,7 @@ cfg_rules = {
     "DIGIT": [str(i) for i in range(256)],
 
     # Operators
-    "ARITHMETIC_OPERATOR": ["+", "-", "/", "*"],
+    "ARITHMETIC_OPERATOR": ["+", "-", "/", "*", "%"],
     "RELATIONAL_OPERATOR": ["<", ">", "<=", ">=", "!=", "=="],
     "LOGICAL_OPERATOR_INFIX": ["and", "or"],
     "LOGICAL_OPERATOR_PREFIX": ["not"],
@@ -257,6 +258,7 @@ def generate_code(symbol, assigned_identifiers:list, x:float, for_init_step)->st
 re_pattern_line_parser = re.compile("(\t*)("+pattern_vocab_for_regex+")(:[^,=]+=[^,=]+(?:,[^,=]+=[^,=]+)*$|$)")
 re_general_line_finder = re.compile(".+(?:\n|$)")
 re_while_identifier = re.compile(".*\nwhile ([a-z])")
+
 max_depth = 3
 max_sub_blocks = 3
 
@@ -301,7 +303,7 @@ def distribution_controller(min_init,
 	return {potential_keyword: uniproba for potential_keyword in potential_keywords}
 
 
-def generate_random_code(min_init = 2,
+def generate_random_code(min_init = 0,
 						 min_length = 2,
 						 max_length = 15,
 						 max_init_count = 3,
@@ -406,51 +408,44 @@ def generate_random_code(min_init = 2,
 	cfg_rules["VARIABLE"] = context_stack[0]["writable_variables"]
 	
 	return code
-
-# The target function to be executed by the processes
-def run_code(q:mp.Queue, random_state):
-	
-	# Some imports 
-	from io import StringIO
-	from contextlib import redirect_stdout
-	import random
-
-	# Setting the random_state given by the main process
-	random.setstate(random_state)
-
-	# Generating the random code
-	code = generate_random_code()
-
-	# Executing it
-	sio = StringIO()
-	with redirect_stdout(sio): 
-		try:
-			exec(code, dict())
-		except ZeroDivisionError:
-			q.put("ZeroDivisionError")
-	
-	q.put(code + "#output\n#" + "#".join(sio.getvalue()))
 	
 
 if __name__ == "__main__":
+	
 	parser = argparse.ArgumentParser(description = "Full Random TinyPy Generator")
-	parser.add_argument("--random_state", help = "Random state to be loaded if any")
-	parser.add_argument("--nb_programs", default = 1000000, help = "Number of programs to be generated")
+	
+	parser.add_argument("--random_state", help = "Path to python random state to be loaded if any")
+	parser.add_argument("--nb_programs", default = 100000, help = "Number of programs to be generated")
 	parser.add_argument("--output_file", default = "./data.txt", help = "Number of programs to be generated")
 	parser.add_argument("--timeout", default = 2, help = "Number of seconds to wait for a process to terminate")
+	parser.add_argument("--log_file", default = "./log.txt", help = "The path to the logging file for monitoring progress")
+	parser.add_argument("--log_interval", default = 10000, help = "The number of code snippets generations before logging to the --log_file for monitoring progress")
+	parser.add_argument("--deduplicate", help = "Whether to perform deduplication of generated programs (set to True for true, False for anything else), defaults to True)")
+	parser.add_argument("--max_deduplication_trials", default = 50, help = "The maximum number of consecutive trials when deduplication occurs")
+	parser.add_argument("--programs_separator", default = "", help = "String to put at the top of each code example (Defaults to empty string)")
+	parser.add_argument("--use_tqdm", help = "Whether or not to use tqdm for monitoring progress (set to True for true, False for anything else), defaults to True)")
+	
 	args = parser.parse_args()
 	
-	random_state =  args.random_state
+	# random_state =  args.random_state
+	random_state = "/mnt/d/esi-5/tiny-lm-full-random-mode/datasets/dataset-2/frcg-random-states/random_state_2024-09-16_20-23.bin"
+	nb_programs = int(args.nb_programs)
 	output_file = args.output_file
-	nb_programs = args.nb_programs
-	timeout = args.timeout
-
+	timeout = int(args.timeout)
+	log_file = args.log_file
+	log_interval = int(args.log_interval)
+	deduplicate = True if args.deduplicate in ("true", None) else False
+	max_deduplication_trials = int(args.max_deduplication_trials)
+	programs_separator = args.programs_separator + '\n' if args.programs_separator else ""
+	use_tqdm = True if args.use_tqdm  in ("true", None) else False 
+	
 	# Saving or setting the random state
 	if args.random_state is None:
 		random_state = random.getstate()
 		now = datetime.datetime.now()
 		date_hour = now.strftime("%Y-%m-%d_%H-%M")
-		with open(f"frcg-random-states/random_state_{date_hour}.bin", "wb") as f:
+		Path("./frcg-random-states").mkdir(parents = True, exist_ok = True)
+		with open(f"./frcg-random-states/random_state_{date_hour}.bin", "wb") as f:
 			pickle.dump(random_state, f)
 	else:
 		with open(args.random_state, "rb") as f:
@@ -466,20 +461,73 @@ if __name__ == "__main__":
 
 	signal.signal(signal.SIGALRM, timeout_handler)
 	
-	f = open(output_file, "w")
 
 	nb_timeouts = 0
 	nb_zero_divisions = 0
+	nb_generated_programs = 0
+	hashes = set()
+	nb_deduplication_trials = 0
 	
+	# Setting the starting_time and first checkpoint time
+	start_time = datetime.datetime.now()
+	checkpoint_time = start_time
+
+	# Opening the logging file and the data output file
+	f_log_file = open(log_file, "w")
+	f = open(output_file, "w")
+
+	# Checking if we use tqdm
+	if use_tqdm:
+		from tqdm import tqdm
+		pbar = tqdm(desc="Generation", total=nb_programs)
+
 	# Launching the loop
-	for i in tqdm(range(nb_programs)):
+	while nb_generated_programs < nb_programs:
+		
+		# Checking if it's log interval
+		if nb_generated_programs % log_interval == 0:
+			now = datetime.datetime.now()
+			f_log_file.write(f"Generated {nb_generated_programs:<{len(str(nb_programs))}} programs,  absolute time: {now - start_time},  relative time: {now - checkpoint_time}\n")
+			f_log_file.flush()
+			checkpoint_time = now
+		
+		# Generating the code
 		code = generate_random_code()
+		
+		# In case of deduplicate
+		if deduplicate:
+			code_hash = hashlib.sha256(code.encode('utf-8')).hexdigest()
+			if code_hash in hashes:
+				nb_deduplication_trials += 1
+				if nb_deduplication_trials == max_deduplication_trials:
+					print("DEDUPLICATE PROBLEM ")
+					break
+				else:
+					continue
+			else:
+				nb_deduplication_trials = 0
+				hashes.add(code_hash)
+		
+		# Trying the execute the generated code
 		sio = StringIO()
 		try:
 			with redirect_stdout(sio):
 				signal.alarm(timeout)
 				exec(code, dict())
-				output = sio.getvalue()
+			
+			# Setting the alarm to 0 just in case it's not enough for the remaining code of the try block to finish execution if no exception occured during exec
+			signal.alarm(0)
+
+			# Saving the code example with its output
+			output = sio.getvalue()
+			result = programs_separator + code + "# output\n# " + "\n# ".join(output.split("\n")[:-1])
+			f.write(result + "\n\n")
+			nb_generated_programs += 1
+			
+			# If using tqdm ...
+			if use_tqdm:
+				pbar.update(1) 
+
 		except ZeroDivisionError:
 			output = "ZeroDivisionError"
 			nb_zero_divisions += 1
@@ -494,10 +542,10 @@ if __name__ == "__main__":
 			output = "TimeoutError"
 		finally:
 			signal.alarm(0)
-		
-		f.write(code + "# output\n# " + "\n# ".join(output.split("\n")[:-1]) + "\n\n")
 	
 	print(f"percentage of timeouts: {nb_timeouts/nb_programs * 100:.2f}%")
 	print(f"percentage of zero divisions: {nb_zero_divisions/nb_programs * 100:.2f}%")
 
+	# Closing the logging and data output files
+	f_log_file.close()
 	f.close()
